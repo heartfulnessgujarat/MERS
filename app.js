@@ -38,8 +38,10 @@ function buildDynamicFormFields() {
     const eventSectionsObj = controlTower.sections[currentEventId];
     const eventFieldsObj = controlTower.fields[currentEventId];
 
-    // Order items organically using row_sequence values passed from sheet
+    // Sort sections safely by row_sequence
     const sortedSections = Object.values(eventSectionsObj).sort((a, b) => a.row_sequence - b.row_sequence);
+    
+    // Sort fields safely by row_sequence while maintaining their properties
     const sortedFields = Object.values(eventFieldsObj).sort((a, b) => a.row_sequence - b.row_sequence);
 
     sortedSections.forEach(sec => {
@@ -53,7 +55,7 @@ function buildDynamicFormFields() {
         header.innerText = sec.section_title;
         sectionBlock.appendChild(header);
 
-        // Filter fields belonging strictly to this section in true sheet order
+        // Filter fields belonging strictly to this section
         const sectionFields = sortedFields.filter(f => f.section_id === sec.section_id);
         
         sectionFields.forEach(f => {
@@ -69,7 +71,7 @@ function buildDynamicFormFields() {
 
             if (f.input_type === "dropdown" || f.input_type === "radio") {
                 input = document.createElement("select");
-                input.className = "w-full p-2 border border-slate-300 roundedbg-white outline-none focus:border-indigo-500";
+                input.className = "w-full p-2 border border-slate-300 rounded bg-white outline-none focus:border-indigo-500";
                 
                 const listKey = f.master_source.includes("!") ? f.master_source.split("!")[1] : f.master_source;
                 let options = controlTower.dropdown_masters ? controlTower.dropdown_masters[listKey] : [];
@@ -101,8 +103,14 @@ function buildDynamicFormFields() {
             input.id = `input_${f.system_id}`;
             if (f.is_required === "Yes") input.required = true;
             
-            input.addEventListener("input", handleVisibilityBranching);
-            input.addEventListener("change", handleVisibilityBranching);
+            input.addEventListener("input", () => {
+                input.setCustomValidity("");
+                handleVisibilityBranching();
+            });
+            input.addEventListener("change", () => {
+                input.setCustomValidity("");
+                handleVisibilityBranching();
+            });
 
             wrapper.appendChild(input);
             sectionBlock.appendChild(wrapper);
@@ -144,9 +152,10 @@ function handleVisibilityBranching() {
     });
 }
 
-// THE ZERO-HARDCODING RULES INTERPRETER
+// FIXED RULE INTERPRETER LOOKUP ENGINE
 function validateFieldInput(sysId, value) {
-    const config = controlTower.fields[currentEventId][sysId];
+    const eventFieldsObj = controlTower.fields[currentEventId];
+    const config = eventFieldsObj[sysId]; // Successfully matches the rule object using its system_id string key
     if (!config || value === "") return true;
 
     const rule = config.validation_rule;
@@ -159,24 +168,21 @@ function validateFieldInput(sysId, value) {
         return Number(token) || 0;
     };
 
-    // 1. Text Filters
     if (rule === "TEXT" && !/^[A-Za-z\s]+$/.test(value)) return "Field must contain text letters only.";
     if (rule === "MOB" && !/^[0-9]{10}$/.test(value)) return "Must be an active 10 digit phone number.";
 
-    // 2. Range Interpreter: NUM_RANGE(min, max)
     if (rule.startsWith("NUM_RANGE")) {
         const limits = rule.match(/NUM_RANGE\(([^,]+),([^)]+)\)/);
         if (limits) {
             const min = resolveValue(limits[1]);
             const max = resolveValue(limits[2]);
             const num = Number(value);
-            if (num < min || num > max) return `Value violation! Range boundary allowed: ${min} to ${max}.`;
+            if (num < min || num > max) return `Value violation! Allowed range: ${min} to ${max}.`;
         }
     }
 
-    // 3. Date Formula Interpreter
     if (rule.startsWith("DATE_AFTER")) {
-        const dependentField = rule.match(/DATE_AFTER\(lookup:([^)]+)\)/)?.[1];
+        const dependentField = rule.match(/DATE_AFTER\(lookup:([^)]+)\)/)?.[1] || rule.match(/DATE_AFTER\(([^)]+)\)/)?.[1];
         const baseDateVal = document.getElementById(`input_${dependentField}`)?.value;
         if (baseDateVal && new Date(value) <= new Date(baseDateVal)) {
             return "Execution window sequence error! End date must fall after the starting date.";
@@ -188,12 +194,12 @@ function validateFieldInput(sysId, value) {
         const targetDate = new Date(value).setHours(0,0,0,0);
 
         if (rule.includes("IF")) {
-            // Evaluates compound conditional logic sentences written in sheet rows
             const hoursValue = Number(document.getElementById("input_workshop_hours")?.value) || 0;
             const daysRequired = hoursValue <= 8 ? resolveValue("lookup:short_hours_prep_days") : resolveValue("lookup:long_hours_prep_days");
             
             if (targetDate < (today + (daysRequired * 86400000))) {
-                return `Administration Rule Exception: This timeline profile demands a minimum of ${daysRequired} logistics planning days.`;
+                const earliestAllowed = new Date(today + (daysRequired * 86400000));
+                return `Administration Rule Exception: This configuration demands at least ${daysRequired} logistics planning days. Earliest date: ${earliestAllowed.toLocaleDateString('en-GB')}`;
             }
         } else if (targetDate < today) {
             return "Historical lock error: Selected dates cannot reside in the past.";
@@ -211,7 +217,7 @@ document.getElementById("mers-dynamic-form").addEventListener("submit", async (e
 
     for (let [key, value] of formData.entries()) {
         const field = document.getElementById(`input_${key}`);
-        if (field && field.offsetParent === null) continue; // Skip validations on hidden structural blocks
+        if (field && field.offsetParent === null) continue; 
 
         const check = validateFieldInput(key, value);
         if (check !== true) {
