@@ -17,7 +17,8 @@ async function init() {
         
         if (!controlTower) throw new Error("Could not download Control Tower data schema.");
         
-        currentEvent = controlTower.events[currentEventId];
+        // Locate this specific event inside the structural tree
+        currentEvent = controlTower.events ? controlTower.events[currentEventId] : null;
         if (!currentEvent) {
             showSystemMessage(`Error: Event ID '${currentEventId}' does not exist inside Control Tower configuration.`, "error");
             return;
@@ -46,12 +47,21 @@ function buildDynamicFormFields() {
     const sectionContainer = document.getElementById("dynamic-sections-container");
     sectionContainer.innerHTML = "";
 
+    // Extract sections and fields belonging ONLY to this specific event ID
+    const eventSectionsObj = controlTower.sections ? controlTower.sections[currentEventId] : null;
+    const eventFieldsObj = controlTower.fields ? controlTower.fields[currentEventId] : null;
+
+    if (!eventSectionsObj || !eventFieldsObj) {
+        showSystemMessage(`Error: No fields or sections mapped for Event ID '${currentEventId}' inside the database.`, "error");
+        return;
+    }
+
     // Sort sections using the sequence column value
-    const sortedSections = Object.values(controlTower.sections).sort((a, b) => a.sequence - b.sequence);
+    const sortedSections = Object.values(eventSectionsObj).sort((a, b) => a.sequence - b.sequence);
     
     // Group field rule objects by section mapping row keys
     const fieldsBySection = {};
-    Object.values(controlTower.fields).forEach(field => {
+    Object.values(eventFieldsObj).forEach(field => {
         if (!fieldsBySection[field.section_id]) fieldsBySection[field.section_id] = [];
         fieldsBySection[field.section_id].push(field);
     });
@@ -85,7 +95,7 @@ function buildDynamicFormFields() {
                 
                 // Fetch drop values dynamically out of the master tab matrix matching column name
                 const listKey = f.master_source.split("!")[1] || f.master_source;
-                const options = controlTower.dropdown_masters[listKey] || [];
+                const options = controlTower.dropdown_masters ? controlTower.dropdown_masters[listKey] : [];
                 
                 // Default placeholder option
                 const defaultOpt = document.createElement("option");
@@ -93,12 +103,14 @@ function buildDynamicFormFields() {
                 defaultOpt.innerText = `-- Choose ${listKey} --`;
                 inputElem.appendChild(defaultOpt);
 
-                options.forEach(opt => {
-                    const o = document.createElement("option");
-                    o.value = opt;
-                    o.innerText = opt;
-                    inputElem.appendChild(o);
-                });
+                if (options && options.length > 0) {
+                    options.forEach(opt => {
+                        const o = document.createElement("option");
+                        o.value = opt;
+                        o.innerText = opt;
+                        inputElem.appendChild(o);
+                    });
+                }
 
                 // Attach dynamic structural branching event tracking if the field is 'mode'
                 if (f.system_id === "mode") {
@@ -110,12 +122,10 @@ function buildDynamicFormFields() {
                 inputElem.rows = 3;
                 inputElem.className = "w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none";
             } else if (f.input_type === "radio") {
-                // Simplified text input for yes/no radios to keep matching layouts pristine
                 inputElem = document.createElement("select");
                 inputElem.className = "w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none";
                 inputElem.innerHTML = `<option value="">-- Select Option --</option><option value="Yes">Yes</option><option value="No">No</option>`;
             } else {
-                // Handles base strings: numbers, standard text formats, date objects
                 inputElem = document.createElement("input");
                 inputElem.type = f.input_type === "number" ? "number" : f.input_type === "date" ? "date" : "text";
                 inputElem.className = "w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none";
@@ -168,7 +178,9 @@ function setInputsRequired(parentContainer, statusValue) {
     const inputs = parentContainer.querySelectorAll("input, select, textarea");
     inputs.forEach(input => {
         const sysId = input.name;
-        const configuration = controlTower.fields[sysId];
+        // Lookup field settings matching the current active event route
+        const eventFieldsObj = controlTower.fields ? controlTower.fields[currentEventId] : null;
+        const configuration = eventFieldsObj ? eventFieldsObj[sysId] : null;
         if (configuration && configuration.is_required === "Yes") {
             input.required = statusValue;
         }
@@ -183,7 +195,7 @@ function showSystemMessage(text, type) {
     box.classList.remove("hidden");
 }
 
-// Handle final registration package submittals straight into data nodes
+// Handle final registration submissions
 document.getElementById("mers-dynamic-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const formData = new FormData(e.target);
@@ -191,10 +203,10 @@ document.getElementById("mers-dynamic-form").addEventListener("submit", async (e
         timestamp: new Date().toISOString()
     };
 
-    // Construct flat structural submission package using exact mapping keys
+    const eventFieldsObj = controlTower.fields[currentEventId];
+
     for (let [key, value] of formData.entries()) {
-        const fieldConfig = controlTower.fields[key];
-        // Skip saving hidden section data fields 
+        const fieldConfig = eventFieldsObj ? eventFieldsObj[key] : null;
         const inputField = document.getElementById(`input_${key}`);
         if (inputField && inputField.offsetParent === null) continue;
 
@@ -204,7 +216,7 @@ document.getElementById("mers-dynamic-form").addEventListener("submit", async (e
     try {
         const writeEndpoint = `${FIREBASE_BASE_URL}submissions/${currentEventId}.json`;
         const response = await fetch(writeEndpoint, {
-            method: "POST", // POST creates safe, sequential push record strings automatically
+            method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(submissionPayload)
         });
