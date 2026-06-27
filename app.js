@@ -38,10 +38,7 @@ function buildDynamicFormFields() {
     const eventSectionsObj = controlTower.sections[currentEventId];
     const eventFieldsObj = controlTower.fields[currentEventId];
 
-    // Sort sections safely by row_sequence
     const sortedSections = Object.values(eventSectionsObj).sort((a, b) => a.row_sequence - b.row_sequence);
-    
-    // Sort fields safely by row_sequence while maintaining their properties
     const sortedFields = Object.values(eventFieldsObj).sort((a, b) => a.row_sequence - b.row_sequence);
 
     sortedSections.forEach(sec => {
@@ -55,7 +52,6 @@ function buildDynamicFormFields() {
         header.innerText = sec.section_title;
         sectionBlock.appendChild(header);
 
-        // Filter fields belonging strictly to this section
         const sectionFields = sortedFields.filter(f => f.section_id === sec.section_id);
         
         sectionFields.forEach(f => {
@@ -103,14 +99,19 @@ function buildDynamicFormFields() {
             input.id = `input_${f.system_id}`;
             if (f.is_required === "Yes") input.required = true;
             
-            input.addEventListener("input", () => {
-                input.setCustomValidity("");
+            // Real-time live validation hook
+            const runLiveValidation = () => {
+                const msg = validateFieldInput(input.name, input.value);
+                if (msg !== true) {
+                    input.setCustomValidity(msg);
+                } else {
+                    input.setCustomValidity("");
+                }
                 handleVisibilityBranching();
-            });
-            input.addEventListener("change", () => {
-                input.setCustomValidity("");
-                handleVisibilityBranching();
-            });
+            };
+
+            input.addEventListener("input", runLiveValidation);
+            input.addEventListener("change", runLiveValidation);
 
             wrapper.appendChild(input);
             sectionBlock.appendChild(wrapper);
@@ -147,15 +148,17 @@ function handleVisibilityBranching() {
             });
         } else {
             block.classList.add("hidden");
-            block.querySelectorAll("input, select, textarea").forEach(i => i.required = false);
+            block.querySelectorAll("input, select, textarea").forEach(i => {
+                i.required = false;
+                i.setCustomValidity(""); // Clear validation errors on hidden fields
+            });
         }
     });
 }
 
-// FIXED RULE INTERPRETER LOOKUP ENGINE
 function validateFieldInput(sysId, value) {
     const eventFieldsObj = controlTower.fields[currentEventId];
-    const config = eventFieldsObj[sysId]; // Successfully matches the rule object using its system_id string key
+    const config = eventFieldsObj[sysId]; 
     if (!config || value === "") return true;
 
     const rule = config.validation_rule;
@@ -211,28 +214,33 @@ function validateFieldInput(sysId, value) {
 
 document.getElementById("mers-dynamic-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const formData = new FormData(e.target);
+    
+    const form = e.target;
+    
+    // Explicitly ask the browser to check overall form validity status
+    if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+    }
+
+    const formData = new FormData(form);
     const payload = { timestamp: new Date().toISOString() };
-    let valid = true;
 
     for (let [key, value] of formData.entries()) {
         const field = document.getElementById(`input_${key}`);
-        if (field && field.offsetParent === null) continue; 
+        if (field && field.offsetParent === null) continue; // Ignore hidden conditional fields
 
+        // Secondary explicit loop verification step
         const check = validateFieldInput(key, value);
         if (check !== true) {
-            valid = false;
             field.setCustomValidity(check);
             field.reportValidity();
             field.focus();
             return;
-        } else {
-            field.setCustomValidity("");
         }
+
         payload[key] = controlTower.fields[currentEventId][key]?.input_type === "number" ? Number(value) : value;
     }
-
-    if (!valid) return;
 
     try {
         await fetch(`${FIREBASE_BASE_URL}submissions/${currentEventId}.json`, {
@@ -240,7 +248,10 @@ document.getElementById("mers-dynamic-form").addEventListener("submit", async (e
             body: JSON.stringify(payload)
         });
         alert("Registration Submitted Successfully! 🎉");
-        e.target.reset();
+        form.reset();
+        
+        // Reset validities to clear browser internal memory blocks
+        form.querySelectorAll("input, select, textarea").forEach(i => i.setCustomValidity(""));
         handleVisibilityBranching();
     } catch (err) {
         alert(`System Offline: ${err.message}`);
