@@ -11,20 +11,17 @@ async function init() {
     currentEventId = urlParams.get('event_id') || "HC-OUTREACH-2026"; 
     
     try {
-        // Fetch layout details
         const res = await fetch(`${FIREBASE_BASE_URL}form_control_tower.json`);
         controlTower = await res.json();
         
         if (!controlTower) throw new Error("Could not download Control Tower data schema.");
         
-        // Locate this specific event inside the structural tree
         currentEvent = controlTower.events ? controlTower.events[currentEventId] : null;
         if (!currentEvent) {
             showSystemMessage(`Error: Event ID '${currentEventId}' does not exist inside Control Tower configuration.`, "error");
             return;
         }
 
-        // Validate Status Rules defined in your Event_Config tab
         if (currentEvent.event_status === "NOT_ACTIVE") {
             showSystemMessage("This registration form is currently closed by the administrator.", "warning");
             return;
@@ -33,7 +30,6 @@ async function init() {
         document.getElementById("app-event-title").innerText = currentEventId;
         document.getElementById("app-event-subtitle").innerText = `Status: ${currentEvent.event_status} | Type: ${currentEvent.event_type}`;
         
-        // Render out the layout
         buildDynamicFormFields();
         document.getElementById("mers-dynamic-form").classList.remove("hidden");
         
@@ -47,7 +43,6 @@ function buildDynamicFormFields() {
     const sectionContainer = document.getElementById("dynamic-sections-container");
     sectionContainer.innerHTML = "";
 
-    // Extract sections and fields belonging ONLY to this specific event ID
     const eventSectionsObj = controlTower.sections ? controlTower.sections[currentEventId] : null;
     const eventFieldsObj = controlTower.fields ? controlTower.fields[currentEventId] : null;
 
@@ -56,10 +51,8 @@ function buildDynamicFormFields() {
         return;
     }
 
-    // Sort sections using the sequence column value
     const sortedSections = Object.values(eventSectionsObj).sort((a, b) => a.sequence - b.sequence);
     
-    // Group field rule objects by section mapping row keys
     const fieldsBySection = {};
     Object.values(eventFieldsObj).forEach(field => {
         if (!fieldsBySection[field.section_id]) fieldsBySection[field.section_id] = [];
@@ -69,9 +62,9 @@ function buildDynamicFormFields() {
     sortedSections.forEach(sec => {
         const sectionBlock = document.createElement("div");
         sectionBlock.id = `section_element_${sec.section_id}`;
+        sectionBlock.setAttribute("data-conditional-rule", sec.conditional_show_rule || "always");
         sectionBlock.className = "space-y-4 border-l-4 border-slate-200 pl-4 md:pl-6 transition-all duration-300";
         
-        // Section Title Header
         const header = document.createElement("h3");
         header.className = "text-xl font-bold text-slate-700 tracking-wide mb-2";
         header.innerText = sec.section_title;
@@ -93,11 +86,9 @@ function buildDynamicFormFields() {
                 inputElem = document.createElement("select");
                 inputElem.className = "w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none";
                 
-                // Fetch drop values dynamically out of the master tab matrix matching column name
                 const listKey = f.master_source.split("!")[1] || f.master_source;
                 const options = controlTower.dropdown_masters ? controlTower.dropdown_masters[listKey] : [];
                 
-                // Default placeholder option
                 const defaultOpt = document.createElement("option");
                 defaultOpt.value = "";
                 defaultOpt.innerText = `-- Choose ${listKey} --`;
@@ -110,11 +101,6 @@ function buildDynamicFormFields() {
                         o.innerText = opt;
                         inputElem.appendChild(o);
                     });
-                }
-
-                // Attach dynamic structural branching event tracking if the field is 'mode'
-                if (f.system_id === "mode") {
-                    inputElem.addEventListener("change", handleVisibilityBranching);
                 }
 
             } else if (f.input_type === "textarea") {
@@ -133,7 +119,10 @@ function buildDynamicFormFields() {
 
             inputElem.name = f.system_id;
             inputElem.id = `input_${f.system_id}`;
-            if (f.is_required === "Yes") inputElem.required = true;
+            
+            // Listen to any changes across any field to instantly trigger dynamic jump checks
+            inputElem.addEventListener("input", handleVisibilityBranching);
+            inputElem.addEventListener("change", handleVisibilityBranching);
 
             fieldWrapper.appendChild(inputElem);
             sectionBlock.appendChild(fieldWrapper);
@@ -142,44 +131,52 @@ function buildDynamicFormFields() {
         sectionContainer.appendChild(sectionBlock);
     });
 
-    // Run custom visibility loop to correctly position structural jumps right at launch
     handleVisibilityBranching();
 }
 
-// Enforces dynamic structural jumps (Online section vs Onsite section path logic)
+// 🚀 ENGINE UPDATE: Dynamically evaluates conditional_show_rule values from the sheet
 function handleVisibilityBranching() {
-    const modeValue = document.getElementById("input_mode")?.value || "";
-    
-    const onlineSection = document.getElementById("section_element_sec_online");
-    const onsiteSection = document.getElementById("section_element_sec_onsite");
+    const eventSectionsObj = controlTower.sections[currentEventId];
+    if (!eventSectionsObj) return;
 
-    if (onlineSection) {
-        if (modeValue === "Online") {
-            onlineSection.classList.remove("hidden");
-            setInputsRequired(onlineSection, true);
-        } else {
-            onlineSection.classList.add("hidden");
-            setInputsRequired(onlineSection, false);
-        }
-    }
+    Object.keys(eventSectionsObj).forEach(secId => {
+        const sectionBlock = document.getElementById(`section_element_${secId}`);
+        if (!sectionBlock) return;
 
-    if (onsiteSection) {
-        if (modeValue === "Onsite") {
-            onsiteSection.classList.remove("hidden");
-            setInputsRequired(onsiteSection, true);
-        } else {
-            onsiteSection.classList.add("hidden");
-            setInputsRequired(onsiteSection, false);
+        const rule = sectionBlock.getAttribute("data-conditional-rule");
+        let shouldShow = true;
+
+        if (rule !== "always" && rule) {
+            try {
+                // Parse expressions like: mode == 'Online'
+                if (rule.includes("==")) {
+                    const parts = rule.split("==");
+                    const fieldId = parts[0].trim();
+                    const targetValue = parts[1].trim().replace(/['"]/g, "");
+                    const currentInputValue = document.getElementById(`input_${fieldId}`)?.value || "";
+                    
+                    shouldShow = (currentInputValue === targetValue);
+                }
+            } catch (e) {
+                console.error("Error processing jump rule: ", rule, e);
+            }
         }
-    }
+
+        if (shouldShow) {
+            sectionBlock.classList.remove("hidden");
+            setInputsRequired(sectionBlock, true);
+        } else {
+            sectionBlock.classList.add("hidden");
+            setInputsRequired(sectionBlock, false);
+        }
+    });
 }
 
 function setInputsRequired(parentContainer, statusValue) {
     const inputs = parentContainer.querySelectorAll("input, select, textarea");
     inputs.forEach(input => {
         const sysId = input.name;
-        // Lookup field settings matching the current active event route
-        const eventFieldsObj = controlTower.fields ? controlTower.fields[currentEventId] : null;
+        const eventFieldsObj = controlTower.fields[currentEventId];
         const configuration = eventFieldsObj ? eventFieldsObj[sysId] : null;
         if (configuration && configuration.is_required === "Yes") {
             input.required = statusValue;
@@ -187,7 +184,79 @@ function setInputsRequired(parentContainer, statusValue) {
     });
 }
 
-// System Notice Wrapper
+// 🚀 ENGINE UPDATE: Parses spreadsheet styles validations (NUM_RANGE, MOB, TEXT, DATE)
+function validateFieldInput(sysId, value) {
+    const eventFieldsObj = controlTower.fields[currentEventId];
+    const config = eventFieldsObj[sysId];
+    if (!config || !value) return true;
+
+    const rule = config.validation_rule;
+    if (!rule || rule === "none") return true;
+
+    // Helper to resolve sheet lookups like "lookup:hall_capacity"
+    const resolveToken = (token) => {
+        token = token.trim();
+        if (token.startsWith("lookup:")) {
+            const configKey = token.replace("lookup:", "");
+            return Number(currentEvent[configKey]) || 0;
+        }
+        return Number(token) || 0;
+    };
+
+    // 1. Text Format Validations
+    if (rule === "TEXT") {
+        if (!/^[A-Za-z\s]+$/.test(value)) return "Must contain letters and spaces only.";
+    }
+    if (rule === "MOB") {
+        if (!/^[0-9]{10}$/.test(value)) return "Must be a valid 10-digit mobile number.";
+    }
+
+    // 2. Numeric Range Validations: NUM_RANGE(min, max)
+    if (rule.startsWith("NUM_RANGE")) {
+        const match = rule.match(/NUM_RANGE\(([^,]+),([^)]+)\)/);
+        if (match) {
+            const min = resolveToken(match[1]);
+            const max = resolveToken(match[2]);
+            const numVal = Number(value);
+            if (numVal < min || numVal > max) return `Value must be between ${min} and ${max}.`;
+        }
+    }
+
+    // 3. Date Configuration Boundary Validations
+    if (rule.startsWith("DATE_MIN") || rule.startsWith("DATE_AFTER")) {
+        const inputDate = new Date(value).setHours(0,0,0,0);
+        const today = new Date().setHours(0,0,0,0);
+
+        if (rule.startsWith("DATE_AFTER")) {
+            const match = rule.match(/DATE_AFTER\(lookup:([^)]+)\)/);
+            if (match) {
+                const dependentFieldId = match[1];
+                const dependentValue = document.getElementById(`input_${dependentFieldId}`)?.value;
+                if (dependentValue) {
+                    const compareDate = new Date(dependentValue).setHours(0,0,0,0);
+                    if (inputDate <= compareDate) return "Date must be after the requested start date.";
+                }
+            }
+        }
+
+        if (rule.startsWith("DATE_MIN")) {
+            // Complex nested check implementation logic for Outreach Prep rules
+            if (rule.includes("IF")) {
+                const hoursVal = Number(document.getElementById("input_workshop_hours")?.value) || 0;
+                const thresholdDays = hoursVal <= 8 ? resolveToken("lookup:short_hours_prep_days") : resolveToken("lookup:long_hours_prep_days");
+                
+                const minAllowedDate = today + (thresholdDays * 24 * 60 * 60 * 1000);
+                if (inputDate < minAllowedDate) {
+                    const dateString = new Date(minAllowedDate).toLocaleDateString();
+                    return `This requires at least ${thresholdDays} days preparation. Earliest date: ${dateString}`;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
 function showSystemMessage(text, type) {
     const box = document.getElementById("system-alert");
     box.innerText = text;
@@ -195,23 +264,38 @@ function showSystemMessage(text, type) {
     box.classList.remove("hidden");
 }
 
-// Handle final registration submissions
 document.getElementById("mers-dynamic-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const formData = new FormData(e.target);
-    const submissionPayload = {
-        timestamp: new Date().toISOString()
-    };
-
+    const submissionPayload = { timestamp: new Date().toISOString() };
     const eventFieldsObj = controlTower.fields[currentEventId];
 
-    for (let [key, value] of formData.entries()) {
-        const fieldConfig = eventFieldsObj ? eventFieldsObj[key] : null;
-        const inputField = document.getElementById(`input_${key}`);
-        if (inputField && inputField.offsetParent === null) continue;
+    let formsAreValid = true;
 
+    // Process and validate inputs
+    for (let [key, value] of formData.entries()) {
+        const inputField = document.getElementById(`input_${key}`);
+        if (inputField && inputField.offsetParent === null) continue; // Skip hidden section values
+
+        // Run validation engine
+        const validationCheck = validateFieldInput(key, value);
+        if (validationCheck !== true) {
+            formsAreValid = false;
+            inputField.setCustomValidity(validationCheck);
+            inputField.reportValidity();
+            
+            inputField.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            inputField.focus();
+            return; 
+        } else {
+            inputField.setCustomValidity("");
+        }
+
+        const fieldConfig = eventFieldsObj ? eventFieldsObj[key] : null;
         submissionPayload[key] = fieldConfig?.input_type === "number" ? Number(value) : value;
     }
+
+    if (!formsAreValid) return;
 
     try {
         const writeEndpoint = `${FIREBASE_BASE_URL}submissions/${currentEventId}.json`;
